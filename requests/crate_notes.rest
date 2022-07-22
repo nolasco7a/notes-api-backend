@@ -2,7 +2,8 @@ POST http://localhost:3001/api/notes
 Content-type: application/json
 
 {
-  "content":"Esto es una nueva nota"
+  "content":"seguir con la certificacion de google",
+  "important":true
 }
 
 ###

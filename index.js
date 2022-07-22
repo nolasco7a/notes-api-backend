@@ -1,54 +1,76 @@
+require('dotenv').config()
+require('./mongo.js')
+
 const express = require('express')
 const cors = require('cors')
 const app = express()
-const logger = require('./loggerMiddleware')
+const Note = require('./models/Note.js')
+const notFound = require('./middleware/notFound.js')
+const handleErrors = require('./middleware/handleErrors.js')
 
+const Sentry = require('@sentry/node')
+const Tracing = require('@sentry/tracing')
+
+Sentry.init({
+  dsn: 'https://202b17b0f2d14d9fa046fa6a9889ca67@o1331226.ingest.sentry.io/6594859',
+  // or pull from params
+  integrations: [
+    // enable HTTP calls tracing
+    new Sentry.Integrations.Http({ tracing: true }),
+    // enable Express.js middleware tracing
+    new Tracing.Integrations.Express({ app })
+  ],
+
+  // Set tracesSampleRate to 1.0 to capture 100%
+  // of transactions for performance monitoring.
+  // We recommend adjusting this value in production
+  tracesSampleRate: 1.0
+  // or pull from params
+  // tracesSampleRate: parseFloat(params.SENTRY_TRACES_SAMPLE_RATE),
+})
+
+// RequestHandler creates a separate execution context using domains, so that every
+// transaction/span/breadcrumb is attached to its own Hub instance
+app.use(Sentry.Handlers.requestHandler())
+// TracingHandler creates a trace for every incoming request
+app.use(Sentry.Handlers.tracingHandler())
+
+// aservir archivos estaticos
+app.use('/images', express.static('images'))
 app.use(cors())
 app.use(express.json())
 
-app.use(logger)
-
-let notes = [
-  {
-    id: 1,
-    content: 'HTML is easy khkhkhk',
-    date: '2019-05-30T17:30:31.098Z',
-    important: true
-  },
-  {
-    id: 2,
-    content: 'Browser can execute only Javascript',
-    date: '2019-05-30T18:39:34.091Z',
-    important: false
-  },
-  {
-    id: 3,
-    content: 'GET and POST are the most important methods of HTTP protocol',
-    date: '2019-05-30T19:20:14.298Z',
-    important: true
-  }
-]
-
+// home api
 app.get('/', (request, response) => {
-  response.send('<h1>Hello World!</h1>')
+  response.send('<h1>Aplication notes</h1>')
 })
 
+// get all notes
 app.get('/api/notes', (request, response) => {
-  response.json(notes)
+  Note.find({})
+    .then(notes => {
+      response.json(notes)
+    })
 })
 
-app.get('/api/notes/:id', (request, response) => {
-  const id = Number(request.params.id)
-  const note = notes.find(note => note.id === id)
-
-  if (note) {
-    response.send(note)
-  } else {
-    response.status(404).end()
-  }
+// get on note by id
+app.get('/api/notes/:id', (request, response, next) => {
+  const id = request.params.id
+  Note.findById(id)
+    .then(note => {
+      if (note) {
+        response.send(note)
+      } else {
+        response.status(404).end()
+      }
+    })
+    .catch(err => {
+      next(err)
+    })
 })
 
-app.post('/api/notes', (request, response) => {
+// create note
+app.post('/api/notes', (request, response, next) => {
   const note = request.body
 
   if (!note || !note.content) {
@@ -56,33 +78,51 @@ app.post('/api/notes', (request, response) => {
       error: 'content missing'
     })
   }
-  const ids = notes.map(note => note.id)
-  const maxId = Math.max(...ids)
-  const newNote = {
-    id: maxId + 1,
+  const newNote = new Note({
     content: note.content,
-    date: new Date().toISOString(),
-    important: typeof note.important !== 'undefined' ? note.important : false
-  }
-
-  notes = [...notes, newNote]
-  response.status(201).json(newNote)
+    date: new Date(),
+    important: note.important || false
+  })
+  newNote.save()
+    .then(savedNote => {
+      response.json(savedNote)
+    })
+    .catch(err => next(err))
 })
 
-app.delete('/api/notes/:id', (request, response) => {
-  const id = Number(request.params.id)
-  notes = notes.filter(note => note.id !== id)
-
+app.delete('/api/notes/:id', (request, response, next) => {
+  const id = request.params.id
+  Note.findByIdAndDelete(id)
+    .then(result => {
+      response.status(204).end()
+    })
+    .catch(err => next(err))
   response.status(204).end()
 })
 
-app.use((request, response) => {
-  response.status(404).json({
-    error: 'not found'
-  })
+app.put('/api/notes/:id', (request, response, next) => {
+  const id = request.params.id
+  const note = request.body
+
+  const newNoteInfo = {
+    content: note.content,
+    important: note.important
+  }
+
+  Note.findByIdAndUpdate(id, newNoteInfo, { new: true })
+    .then(result => {
+      response.json(result)
+    })
+    .catch(err => next(err))
 })
 
-const PORT = process.env.PORT || 3001
+// el orden de middleware es importante, se lee de arriba hacia abajo
+// primero intentara entrar a la rutas superiores
+app.use(notFound)
+app.use(Sentry.Handlers.errorHandler())
+app.use(handleErrors)
+
+const PORT = process.env.PORT
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`)
 })
